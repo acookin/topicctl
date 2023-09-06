@@ -9,6 +9,8 @@ import (
 	"time"
 
 	"github.com/aws/aws-sdk-go/aws"
+	"github.com/aws/aws-sdk-go/aws/credentials"
+	"github.com/aws/aws-sdk-go/aws/credentials/stscreds"
 	"github.com/aws/aws-sdk-go/aws/session"
 	sigv4 "github.com/aws/aws-sdk-go/aws/signer/v4"
 	"github.com/segmentio/kafka-go"
@@ -52,6 +54,12 @@ type SASLConfig struct {
 	Mechanism SASLMechanism
 	Username  string
 	Password  string
+	AWSConfig *AWSConfig
+}
+
+type AWSConfig struct {
+	Region     *string
+	AssumeRole *string
 }
 
 // Connector is a wrapper around the low-level, kafka-go dialer and client.
@@ -74,8 +82,18 @@ func NewConnector(config ConnectorConfig) (*Connector, error) {
 	if config.SASL.Enabled {
 		switch config.SASL.Mechanism {
 		case SASLMechanismAWSMSKIAM:
-			sess := session.Must(session.NewSession())
-			signer := sigv4.NewSigner(sess.Config.Credentials)
+			awsConfig := &aws.Config{}
+			if config.SASL.AWSConfig != nil && config.SASL.AWSConfig.Region != nil {
+				awsConfig.Region = aws.String(*config.SASL.AWSConfig.Region)
+			}
+			sess := session.Must(session.NewSession(awsConfig))
+			var creds *credentials.Credentials
+			if config.SASL.AWSConfig != nil && config.SASL.AWSConfig.AssumeRole != nil {
+				creds = stscreds.NewCredentials(sess, *config.SASL.AWSConfig.AssumeRole)
+			} else {
+				creds = sess.Config.Credentials
+			}
+			signer := sigv4.NewSigner(creds)
 			region := aws.StringValue(sess.Config.Region)
 
 			mechanismClient = &aws_msk_iam.Mechanism{
@@ -106,7 +124,7 @@ func NewConnector(config ConnectorConfig) (*Connector, error) {
 				return nil, err
 			}
 		default:
-			return nil, fmt.Errorf("Unrecognized SASL mechanism: %s", config.SASL.Mechanism)
+			return nil, fmt.Errorf("unrecognized SASL mechanism: %s", config.SASL.Mechanism)
 		}
 	}
 
